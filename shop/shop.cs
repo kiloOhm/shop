@@ -356,10 +356,12 @@ namespace Oxide.Plugins
                     {
                         container.addPanel($"products_{product.safeName}_img", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), (i == 0) ? (startY + productMargin) : (anchorY + productMargin), sizeEachX - (2 * productMargin), sizeEachX - (2 * productMargin), 1920, 1080, true), GuiContainer.Layer.menu, null, FadeIn, FadeOut, null, product.safeName);
                     }
-                    int remaining = 0;
-                    if (maxAmountReached(player.userID, product, out remaining)) { }
-                    else if (maxAmountReached(player.userID, category, out remaining)) { }
-                    if(remaining != 0)
+                    int remainingProduct;
+                    int remainingCategory;
+                    maxAmountReached(player.userID, product, out remainingProduct);
+                    maxAmountReached(player.userID, category, out remainingCategory);
+                    int remaining = Math.Min(remainingProduct, remainingCategory);
+                    if (remaining != 0)
                     {
                         container.addText($"products_{product.safeName}_amount", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), ((i == 0) ? (startY + productMargin) : (anchorY + productMargin)) + sizeEachX - (2 * productMargin) - 25, sizeEachX - (2 * productMargin), 25, 1920, 1080, true), GuiContainer.Layer.menu, new GuiText($"{remaining} left", 14, white90), FadeIn, FadeOut);
                     }
@@ -452,6 +454,13 @@ namespace Oxide.Plugins
                 count++;
             }
 
+            //remaining amount
+            int remainingProduct;
+            int remainingCategory;
+            maxAmountReached(player.userID, product, out remainingProduct);
+            maxAmountReached(player.userID, category, out remainingCategory);
+            int remaining = Math.Min(remainingProduct, remainingCategory);
+
             int amountLocal = amount;
             //atc
             Action<BasePlayer, string[]> minusCallback = (bPlayer, input) =>
@@ -464,6 +473,7 @@ namespace Oxide.Plugins
             Action<BasePlayer, string[]> plusCallback = (bPlayer, input) =>
             {
                 if (product.amount == 0) return;
+                if (amountLocal >= remaining) return;
                 sendCheckout(bPlayer, category, product, amountLocal + 1);
             };
             container.addPlainButton("atc_plusbackground", new Rectangle(1566, 985, 45, 45, 1920, 1080, true), GuiContainer.Layer.menu, black60, 0, 0, new GuiText("+", 10, white90), plusCallback);
@@ -694,8 +704,9 @@ namespace Oxide.Plugins
 
         private bool maxAmountReached(ulong userID, ITrackable input, out int remainingAmount)
         {
+            remainingAmount = int.MaxValue;
+            if (input.maxAmount == 0) return false;
             remainingAmount = input.maxAmount;
-            if (remainingAmount == 0) return false;
             Tracker tracker = getTracker(userID, input.name);
             if (tracker == null) return false;
             remainingAmount = input.maxAmount - tracker.totalAmount;
