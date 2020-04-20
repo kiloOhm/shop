@@ -1,12 +1,14 @@
 ﻿// Requires: GUICreator
 
+//#define DEBUG
+using ConVar;
 using Newtonsoft.Json;
 using Oxide.Core;
 using Oxide.Core.Configuration;
 using Oxide.Core.Plugins;
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
 using static Oxide.Plugins.GUICreator;
@@ -28,7 +30,8 @@ namespace Oxide.Plugins
 
         #region global
 
-        private DynamicConfigFile ConfigFile;
+        DynamicConfigFile CustomerDataFile;
+        CustomerData customerData;
 
         private static shop PluginInstance = null;
 
@@ -41,11 +44,18 @@ namespace Oxide.Plugins
 
         #region classes
 
+        public interface ITrackable
+        {
+            string name { get; set; }
+            int maxAmount { get; set; }
+            int cooldownSeconds { get; set; }
+        }
+
         [JsonObject(MemberSerialization.OptIn)]
-        public class Category
+        public class Category:ITrackable
         {
             [JsonProperty(PropertyName = "Name")]
-            public string name;
+            public string name { get; set; }
 
             [JsonProperty(PropertyName = "Fontsize")]
             public int fontsize;
@@ -61,15 +71,21 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Missing Permission Message")]
             public string forbiddenMsg;
 
+            [JsonProperty(PropertyName = "Maximum amount items that can be purchased from this category")]
+            public int maxAmount { get; set; }
+
+            [JsonProperty(PropertyName = "Cooldown in seconds after buying an item from this category")]
+            public int cooldownSeconds { get; set; }
+
             [JsonProperty(PropertyName = "Products")]
             public List<Product> products = new List<Product>();
         }
 
         [JsonObject(MemberSerialization.OptIn)]
-        public class Product
+        public class Product:ITrackable
         {
             [JsonProperty(PropertyName = "Name")]
-            public string name;
+            public string name { get; set; }
 
             [JsonProperty(PropertyName = "Fontsize")]
             public int fontsize;
@@ -88,6 +104,12 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Missing Permission Message")]
             public string forbiddenMsg;
 
+            [JsonProperty(PropertyName = "Maximum amount that can be purchased")]
+            public int maxAmount { get; set; }
+
+            [JsonProperty(PropertyName = "Cooldown in seconds after purchase")]
+            public int cooldownSeconds { get; set; }
+
             [JsonProperty(PropertyName = "Command to be executed on purchase")]
             public string command;
 
@@ -101,6 +123,15 @@ namespace Oxide.Plugins
             public Dictionary<string, int> ingredients;
         }
 
+        public class Tracker
+        {
+            public string name;
+            public DateTime lastPurchase;
+            public int totalAmount;
+
+            public Tracker() { }
+        }
+
         #endregion classes
 
         #region oxide hooks
@@ -111,9 +142,11 @@ namespace Oxide.Plugins
             permission.RegisterPermission("shop.use", this);
             permission.RegisterPermission("shop.free", this);
 
-            //Umod API
-            ConfigFile = Interface.Oxide.DataFileSystem.GetFile("shop/posData");
+            //Data
+            CustomerDataFile = Interface.Oxide.DataFileSystem.GetFile("shop/customerData");
+            loadData();
 
+            //Localization
             lang.RegisterMessages(messages, this);
         }
 
@@ -121,6 +154,7 @@ namespace Oxide.Plugins
         {
             //commands
             cmd.AddChatCommand(config.command, this, nameof(shopCommand));
+            cmd.AddChatCommand("wipeshop", this, nameof(wipeShopCommand));
             cmd.AddConsoleCommand("shop.close", this, nameof(closeShop));
 
             //references
@@ -135,6 +169,7 @@ namespace Oxide.Plugins
             guiCreator.registerImage(this, "white_cross", "https://i.imgur.com/fbwkYDj.png");
             guiCreator.registerImage(this, "dollar_icon", config.currencyIcon);
             guiCreator.registerImage(this, "no_permission", config.noPermissionOverlay);
+            guiCreator.registerImage(this, "cooldown", config.cooldownOverlay);
             guiCreator.registerImage(this, "info_background", config.defaultInfoBG);
             guiCreator.registerImage(this, "products_background", config.background);
 
@@ -321,6 +356,13 @@ namespace Oxide.Plugins
                     {
                         container.addPanel($"products_{product.safeName}_img", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), (i == 0) ? (startY + productMargin) : (anchorY + productMargin), sizeEachX - (2 * productMargin), sizeEachX - (2 * productMargin), 1920, 1080, true), GuiContainer.Layer.menu, null, FadeIn, FadeOut, null, product.safeName);
                     }
+                    int remaining = 0;
+                    if (maxAmountReached(player.userID, product, out remaining)) { }
+                    else if (maxAmountReached(player.userID, category, out remaining)) { }
+                    if(remaining != 0)
+                    {
+                        container.addText($"products_{product.safeName}_amount", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), ((i == 0) ? (startY + productMargin) : (anchorY + productMargin)) + sizeEachX - (2 * productMargin) - 25, sizeEachX - (2 * productMargin), 25, 1920, 1080, true), GuiContainer.Layer.menu, new GuiText($"{remaining} left", 14, white90), FadeIn, FadeOut);
+                    }
                     container.addPanel($"products_{product.safeName}_label", new Rectangle((j == 0) ? startX : anchorX, ((i == 0) ? startY : anchorY) + 5 + sizeEachX, sizeEachX, sizeEachY - (5 + sizeEachX), 1920, 1080, true), GuiContainer.Layer.menu, white30, FadeIn, FadeOut, new GuiText(product.name, product.fontsize, black90));
                     int index = count;
                     Action<BasePlayer, string[]> callback = (bPlayer, input) =>
@@ -332,11 +374,24 @@ namespace Oxide.Plugins
                         activeProduct = products[index];
                     };
                     
-                    if (!hasPermission(player, category, product))
+                    if (!hasPermission(player, category, product) || maxAmountReached(player.userID, category) || maxAmountReached(player.userID, product))
                     {
                         container.addPlainPanel($"products_{product.safeName}_forbidden_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, true);
                         container.addImage($"products_{product.safeName}_forbidden", new Rectangle(0, 0, 1, 1), "no_permission", $"products_{product.safeName}_forbidden_bgpanel", white90, FadeIn, FadeOut);
                     }
+                    else
+                    {
+                        int cooldown = 0;
+                        if (!cooldownElapsed(player.userID, product, out cooldown)) { }
+                        else if (!cooldownElapsed(player.userID, category, out cooldown)) { }
+                        if(cooldown > 0)
+                        {
+                            container.addPlainPanel($"products_{product.safeName}_cooldown_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, true);
+                            container.addImage($"products_{product.safeName}_cooldown", new Rectangle(), "cooldown", $"products_{product.safeName}_cooldown_bgpanel", white90, FadeIn, FadeOut);
+                            container.addText($"products_{product.safeName}_cooldown_text", new Rectangle(), new GuiText(formatTimeSpan(new TimeSpan(0,0,cooldown)), 14, white90), FadeIn, FadeOut, $"products_{product.safeName}_cooldown");
+                        }
+                    }
+
 
                     container.addPlainButton($"products_{product.safeName}_button", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachY, 1920, 1080, true), GuiContainer.Layer.menu, callback: callback);
                     count++;
@@ -348,7 +403,7 @@ namespace Oxide.Plugins
 
         private void sendInfo(BasePlayer player, Product product)
         {
-            GuiContainer container = new GuiContainer(this, "info", "products");
+            GuiContainer container = new GuiContainer(this, "info", "categories");
 
             if (string.IsNullOrEmpty(product.imageUrl) && !string.IsNullOrEmpty(product.shortname))
             {
@@ -370,14 +425,15 @@ namespace Oxide.Plugins
             GuiContainer container = new GuiContainer(this, "checkout", "info");
             List<Category> categories = getCategories(player);
 
-            Queue<bool> canAfford = PluginInstance.canAfford(player, product, amount);
+            Queue<bool> canAffordIngredients;
+            bool canAfford = PluginInstance.canAfford(player, product, amount, out canAffordIngredients);
 
             //ingredients
             int count = 0;
             foreach (KeyValuePair<string, int> ingredient in product.ingredients)
             {
                 if (count == maxIngredients) break;
-                bool canAfford_ = canAfford.Dequeue();
+                bool canAfford_ = canAffordIngredients.Dequeue();
                 string displayName;
                 ItemDefinition itemDefinition = ItemManager.FindItemDefinition(ingredient.Key);
                 if (itemDefinition != null)
@@ -420,6 +476,7 @@ namespace Oxide.Plugins
                     sendCheckout(player, category, product, amount);
                     sendBalance(player);
                 }
+                sendProducts(player, category);
             };
             container.addPlainButton("buybutton", new Rectangle(1616, 985, 234, 45, 1920, 1080, true), GuiContainer.Layer.menu, canBuy(player, category, product, amount) ? green70 : red70, 0, 0, new GuiText("Buy", 26, white90), buyCallback);
 
@@ -453,6 +510,18 @@ namespace Oxide.Plugins
             closeShopUi(player);
         }
 
+        private void wipeShopCommand(BasePlayer player, string command, string[] args)
+        {
+            if(!player.IsAdmin)
+            {
+                PrintToChat(player, lang.GetMessage("noPermission", this, player.UserIDString));
+                return;
+            }
+            customerData.purchaseTrackers.Clear();
+            player.ChatMessage("shop data wiped");
+            saveData();
+        }
+
         #endregion commands
 
         #region transaction
@@ -468,11 +537,30 @@ namespace Oxide.Plugins
                 guiCreator.customGameTip(player, errorMsg, 2, gametipType.error);
                 return false;
             }
-            if (!canAfford(player, product, amount).Last<bool>())
+            if (!canAfford(player, product, amount))
             {
                 guiCreator.customGameTip(player, lang.GetMessage("cantAfford", this, player.UserIDString), 2, gametipType.error);
                 return false;
             }
+            if(maxAmountReached(player.userID, category) || maxAmountReached(player.userID, product))
+            {
+                guiCreator.customGameTip(player, lang.GetMessage("maxAmount", this, player.UserIDString), 2, gametipType.error);
+                return false;
+            }
+            int cooldown;
+            if (!cooldownElapsed(player.userID, product, out cooldown))
+            {
+                string remaining = formatTimeSpan(new TimeSpan(0, 0, cooldown));
+                guiCreator.customGameTip(player, string.Format(lang.GetMessage("cooldown", this, player.UserIDString), remaining), 2, gametipType.error);
+                return false;
+            }
+            else if(!cooldownElapsed(player.userID, category, out cooldown))
+            {
+                string remaining = formatTimeSpan(new TimeSpan(0, 0, cooldown));
+                guiCreator.customGameTip(player, string.Format(lang.GetMessage("cooldown", this, player.UserIDString), remaining), 2, gametipType.error);
+                return false;
+            }
+
 
             //take price
             if (!permission.UserHasPermission(player.UserIDString, "shop.free"))
@@ -491,6 +579,27 @@ namespace Oxide.Plugins
                 }
             }
 
+            //tracker
+            if(category.maxAmount != 0 || category.cooldownSeconds != 0)
+            {
+                Tracker tracker = getTracker(player.userID, category.name);
+                if (tracker == null) tracker = new Tracker { name = category.name };
+                tracker.lastPurchase = DateTime.Now;
+                if(category.maxAmount != 0) tracker.totalAmount += amount;
+                customerData.purchaseTrackers[player.userID].Add(tracker);
+                saveData();
+            }
+            if (product.maxAmount != 0 || product.cooldownSeconds != 0)
+            {
+                Tracker tracker = getTracker(player.userID, product.name);
+                if (tracker == null) tracker = new Tracker { name = product.name };
+                tracker.lastPurchase = DateTime.Now;
+                if(product.maxAmount != 0) tracker.totalAmount += amount;
+                customerData.purchaseTrackers[player.userID].Add(tracker);
+                saveData();
+            }
+
+            //result
             if (!string.IsNullOrEmpty(product.command))
             {
                 //execute command
@@ -542,9 +651,78 @@ namespace Oxide.Plugins
 
         #region helpers
 
+        private string formatTimeSpan(TimeSpan span)
+        {
+            int d = (int)span.TotalDays;
+            int h = (int)(span.TotalHours-(d * 24));
+            int m = (int)(span.TotalMinutes - (h * 60) - (d * 24 * 60));
+            int s = (int)(span.TotalSeconds - (m * 60) - (h * 60 * 60) - (d * 24 * 60 *60));
+            StringBuilder sb = new StringBuilder();
+            if (d != 0) sb.Append($"{d}d ");
+            if (h != 0) sb.Append($"{h}h ");
+            if (m != 0) sb.Append($"{m}m ");
+            if (s != 0) sb.Append($"{s}s");
+            return sb.ToString();
+        }
+
         private void log(BasePlayer player, Product product, int amount)
         {
             LogToFile("shopPurchases", $"{DateTime.Now.ToString("MM/dd/yyyy HH:mm:ss")} {player.displayName } bought {Math.Max(1,product.amount)*amount} x {product.name}" , this);
+        }
+
+        private Tracker getTracker(ulong userID, string name)
+        {
+            List<Tracker> userTrackers;
+            if (!customerData.purchaseTrackers.TryGetValue(userID, out userTrackers))
+            {
+                userTrackers = new List<Tracker>();
+                customerData.purchaseTrackers.Add(userID, userTrackers);
+                saveData();
+            }
+            foreach(Tracker tracker in userTrackers)
+            {
+                if (tracker.name == name) return tracker;
+            }
+            return null;
+        }
+
+        private bool maxAmountReached(ulong userID, ITrackable input)
+        {
+            int temp;
+            return maxAmountReached(userID, input, out temp);
+        }
+
+        private bool maxAmountReached(ulong userID, ITrackable input, out int remainingAmount)
+        {
+            remainingAmount = input.maxAmount;
+            if (remainingAmount == 0) return false;
+            Tracker tracker = getTracker(userID, input.name);
+            if (tracker == null) return false;
+            remainingAmount = input.maxAmount - tracker.totalAmount;
+#if DEBUG
+            BasePlayer.FindByID(userID).ChatMessage($"remainingAmount = {remainingAmount}");
+#endif
+            if (remainingAmount <= 0) return true;
+            return false;
+        }
+
+        private bool cooldownElapsed(ulong userID, ITrackable input)
+        {
+            int temp;
+            return cooldownElapsed(userID, input, out temp);
+        }
+
+        private bool cooldownElapsed(ulong userID, ITrackable input, out int remainingSeconds)
+        {
+            remainingSeconds = 0;
+            Tracker tracker = getTracker(userID, input.name);
+            if (tracker == null) return true;
+            remainingSeconds = (int)(input.cooldownSeconds - DateTime.Now.Subtract(tracker.lastPurchase).TotalSeconds);
+#if DEBUG
+            BasePlayer.FindByID(userID).ChatMessage($"remainingSeconds = {remainingSeconds}");
+#endif
+            if (remainingSeconds <= 0) return true;
+            return false;
         }
 
         private List<Category> getCategories(BasePlayer player)
@@ -579,7 +757,11 @@ namespace Oxide.Plugins
         private bool canBuy(BasePlayer player, Category category, Product product, int amount)
         {
             if(!hasPermission(player, category, product)) return false;
-            if (!canAfford(player, product, amount).Last<bool>()) return false;
+            if (!canAfford(player, product, amount)) return false;
+            if (maxAmountReached(player.userID, category)) return false;
+            if (maxAmountReached(player.userID, product)) return false;
+            if (!cooldownElapsed(player.userID, category)) return false;
+            if (!cooldownElapsed(player.userID, product)) return false;
             return true;
         }
 
@@ -594,9 +776,15 @@ namespace Oxide.Plugins
             return true;
         }
 
-        private Queue<bool> canAfford(BasePlayer player, Product product, int amount)
+        private bool canAfford(BasePlayer player, Product product, int amount)
         {
-            Queue<bool> output = new Queue<bool>();
+            Queue<bool> temp;
+            return canAfford(player, product, amount, out temp);
+        }
+
+        private bool canAfford(BasePlayer player, Product product, int amount, out Queue<bool> ingredients)
+        {
+            ingredients = new Queue<bool>();
             bool total = true;
             foreach (KeyValuePair<string, int> ingredient in product.ingredients)
             {
@@ -614,15 +802,14 @@ namespace Oxide.Plugins
                 if (balance < (ingredient.Value * amount))
                 {
                     total = false;
-                    output.Enqueue(false);
+                    ingredients.Enqueue(false);
                 }
                 else
                 {
-                    output.Enqueue(true);
+                    ingredients.Enqueue(true);
                 }
             }
-            output.Enqueue(total);
-            return output;
+            return total;
         }
 
         private int getPoints(BasePlayer player)
@@ -658,6 +845,41 @@ namespace Oxide.Plugins
 
         #endregion helpers
 
+        #region data management
+        private class CustomerData
+        {
+            public Dictionary<ulong, List<Tracker>> purchaseTrackers = new Dictionary<ulong, List<Tracker>>();
+
+            public CustomerData()
+            {
+            }
+        }
+
+        void saveData()
+        {
+            try
+            {
+                CustomerDataFile.WriteObject(customerData);
+            }
+            catch (Exception E)
+            {
+                Puts(E.ToString());
+            }
+        }
+
+        void loadData()
+        {
+            try
+            {
+                customerData = CustomerDataFile.ReadObject<CustomerData>();
+            }
+            catch (Exception E)
+            {
+                Puts(E.ToString());
+            }
+        }
+        #endregion
+
         #region Config
 
         private static ConfigData config;
@@ -685,7 +907,10 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "No Permission Overlay (recommended size: 400px x 400px)")]
             public string noPermissionOverlay;
 
-            [JsonProperty(PropertyName = "Economics/ServerRewards Point Icon")]
+            [JsonProperty(PropertyName = "cooldown Overlay (recommended size: 400px x 400px)")]
+            public string cooldownOverlay;
+
+            [JsonProperty(PropertyName = "Economics/ServerRewards Point Icon")] 
             public string currencyIcon;
 
             [JsonProperty(PropertyName = "Categories")]
@@ -702,7 +927,8 @@ namespace Oxide.Plugins
                 hideNonPermission = false,
                 background = "https://i.imgur.com/O7T9ow3.jpg",
                 defaultInfoBG = "https://i.imgur.com/tQPYSIf.jpg",
-                noPermissionOverlay = "https://i.imgur.com/BBuqkPf.png",
+                noPermissionOverlay = "https://i.imgur.com/pKTsSZg.png",
+                cooldownOverlay = "https://i.imgur.com/55uXmZt.png",
                 currencyIcon = "https://i.gyazo.com/acbdabe16b83e4312af80bbce31bc36c.png",
                 Categories = new List<Category>
                 {
@@ -713,6 +939,8 @@ namespace Oxide.Plugins
                         categoryicon = "https://i.imgur.com/4dWsoUa.png",
                         permission = "",
                         forbiddenMsg = "",
+                        maxAmount = 2,
+                        cooldownSeconds = 20,
                         products = new List<Product>
                         {
                             new Product
@@ -723,6 +951,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 300,
                                 command = "",
                                 shortname = "rifle.ak",
                                 amount = 1,
@@ -742,6 +972,8 @@ namespace Oxide.Plugins
                                 imageUrl = "https://vignette.wikia.nocookie.net/play-rust/images/9/95/494EDB03-BAEA-42BB-8FAE-748F0D2B50A9.png/revision/latest/scale-to-width-down/340?cb=20191107202537",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "portablevehicles.give {steamid} minicopter",
                                 shortname = "",
                                 amount = 1,
@@ -759,6 +991,8 @@ namespace Oxide.Plugins
                         categoryicon = "gears",
                         permission = "",
                         forbiddenMsg = "",
+                        maxAmount = 0,
+                        cooldownSeconds = 0,
                         products = new List<Product>
                         {
                             new Product
@@ -769,6 +1003,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "propanetank",
                                 amount = 1,
@@ -785,6 +1021,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "gears",
                                 amount = 1,
@@ -802,6 +1040,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "metalblade",
                                 amount = 1,
@@ -818,6 +1058,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "metalpipe",
                                 amount = 1,
@@ -834,6 +1076,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "shop.spring",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "metalspring",
                                 amount = 1,
@@ -851,6 +1095,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "riflebody",
                                 amount = 1,
@@ -867,6 +1113,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "roadsigns",
                                 amount = 1,
@@ -883,6 +1131,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "rope",
                                 amount = 1,
@@ -899,6 +1149,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "smgbody",
                                 amount = 1,
@@ -915,6 +1167,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "semibody",
                                 amount = 1,
@@ -931,6 +1185,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "sewingkit",
                                 amount = 1,
@@ -947,6 +1203,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "sheetmetal",
                                 amount = 1,
@@ -963,6 +1221,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "tarp",
                                 amount = 1,
@@ -979,6 +1239,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "techparts",
                                 amount = 1,
@@ -996,6 +1258,8 @@ namespace Oxide.Plugins
                         categoryicon = "explosive.timed",
                         permission = "shop.explosives",
                         forbiddenMsg = "You need to be a gold donator to buy this!",
+                        maxAmount = 0,
+                        cooldownSeconds = 0,
                         products = new List<Product>
                         {
                             new Product
@@ -1006,6 +1270,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "explosive.timed",
                                 amount = 1,
@@ -1022,6 +1288,8 @@ namespace Oxide.Plugins
                                 imageUrl = "",
                                 permission = "",
                                 forbiddenMsg = "You specifically don't have permission for this, because I don't like you :P",
+                                maxAmount = 0,
+                                cooldownSeconds = 0,
                                 command = "",
                                 shortname = "ammo.rocket.basic",
                                 amount = 1,
@@ -1065,7 +1333,9 @@ namespace Oxide.Plugins
         {
             {"noPermission", "You don't have permission to use this command!"},
             {"noPermissionToBuy", "You don't have permission to buy this!" },
-            {"cantAfford", "You can't afford this!"}
+            {"cantAfford", "You can't afford this!"},
+            {"maxAmount", "You can't buy any more of this!" },
+            {"cooldown", "You have to wait {0} before you can buy more!" }
         };
 
         #endregion Localization

@@ -302,7 +302,7 @@ namespace Oxide.Plugins
                     Name = name,
                     Components =
                 {
-                    new CuiImageComponent { Color = (panelColor != null)?panelColor.getColorString():"0 0 0 0", FadeIn = FadeIn, Material = blur?"assets/content/ui/uibackgroundblur-ingamemenu.mat":"/Icons/IconMaterial.mat"},
+                    new CuiImageComponent { Color = (panelColor != null)?panelColor.getColorString():"0 0 0 0", FadeIn = FadeIn, Material = blur?"assets/content/ui/uibackgroundblur-ingamemenu.mat":"Assets/Icons/IconMaterial.mat"},
                     rectangle
                 },
                     FadeOut = FadeOut
