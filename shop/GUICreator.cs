@@ -97,7 +97,7 @@ namespace Oxide.Plugins
                 AnchorMax = "1 1";
             }
 
-            public Rectangle(float X, float Y, float W, float H, int resX = 1, int resY = 1, bool topLeftOrigin = false)
+            public Rectangle(float X, float Y, float W, float H, float resX = 1, float resY = 1, bool topLeftOrigin = false)
             {
                 float newY = topLeftOrigin ? resY - Y - H : Y;
 
@@ -532,7 +532,7 @@ namespace Oxide.Plugins
 #if DEBUG
                 player.ChatMessage($"adding {container.name} to tracker");
 #endif
-                if (getContainer(plugin, container.name) != null) destroyGui(plugin, container.name);
+                if (getContainer(plugin, container.name) != null) destroyGui(plugin, container);
                 activeGuiContainers.Add(container);
             }
 

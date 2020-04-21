@@ -15,7 +15,7 @@ using static Oxide.Plugins.GUICreator;
 
 namespace Oxide.Plugins
 {
-    [Info("shop", "OHM", "1.0.3")]
+    [Info("shop", "OHM", "1.1.0 BETA")]
     [Description("The ultimate GUI Shop")]
     internal class shop : RustPlugin
     {
@@ -51,6 +51,15 @@ namespace Oxide.Plugins
             int cooldownSeconds { get; set; }
         }
 
+        public class Tracker
+        {
+            public string name;
+            public DateTime lastPurchase;
+            public int totalAmount;
+
+            public Tracker() { }
+        }
+
         [JsonObject(MemberSerialization.OptIn)]
         public class Category:ITrackable
         {
@@ -58,18 +67,18 @@ namespace Oxide.Plugins
             public string name { get; set; }
 
             [JsonProperty(PropertyName = "Fontsize")]
-            public int fontsize;
+            public int fontsize { get; set; }
 
             public string safeName => Regex.Replace(name, @" ", "");
 
             [JsonProperty(PropertyName = "Category icon url/shortname (recommended size: 60px x 60px, item shortname for item icon)")]
-            public string categoryicon;
+            public string categoryicon { get; set; }
 
             [JsonProperty(PropertyName = "Permission to craft (if empty, no permission required)")]
-            public string permission;
+            public string permission { get; set; }
 
             [JsonProperty(PropertyName = "Missing Permission Message")]
-            public string forbiddenMsg;
+            public string forbiddenMsg { get; set; }
 
             [JsonProperty(PropertyName = "Maximum amount items that can be purchased from this category")]
             public int maxAmount { get; set; }
@@ -78,7 +87,7 @@ namespace Oxide.Plugins
             public int cooldownSeconds { get; set; }
 
             [JsonProperty(PropertyName = "Products")]
-            public List<Product> products = new List<Product>();
+            public List<Product> products { get; set; } = new List<Product>();
         }
 
         [JsonObject(MemberSerialization.OptIn)]
@@ -88,21 +97,21 @@ namespace Oxide.Plugins
             public string name { get; set; }
 
             [JsonProperty(PropertyName = "Fontsize")]
-            public int fontsize;
+            public int fontsize { get; set; }
 
             public string safeName => Regex.Replace(name, @" ", "");
 
             [JsonProperty(PropertyName = "Description (max. 200 characters)")]
-            public string description = null;
+            public string description { get; set; } = null;
 
             [JsonProperty(PropertyName = "Image URL (recommended size: 400px x 400px)")]
-            public string imageUrl;
+            public string imageUrl { get; set; }
 
             [JsonProperty(PropertyName = "Permission to craft (if empty, no permission required)")]
-            public string permission;
+            public string permission { get; set; }
 
             [JsonProperty(PropertyName = "Missing Permission Message")]
-            public string forbiddenMsg;
+            public string forbiddenMsg { get; set; }
 
             [JsonProperty(PropertyName = "Maximum amount that can be purchased")]
             public int maxAmount { get; set; }
@@ -111,25 +120,172 @@ namespace Oxide.Plugins
             public int cooldownSeconds { get; set; }
 
             [JsonProperty(PropertyName = "Command to be executed on purchase")]
-            public string command;
+            public string command { get; set; }
 
             [JsonProperty(PropertyName = "Item shortname")]
-            public string shortname;
+            public string shortname { get; set; }
 
             [JsonProperty(PropertyName = "Item amount")]
-            public int amount;
+            public int amount { get; set; }
 
             [JsonProperty(PropertyName = "Ingredients (max. 4)")]
-            public Dictionary<string, int> ingredients;
+            public Dictionary<string, int> ingredients { get; set; } = new Dictionary<string, int>();
         }
 
-        public class Tracker
-        {
-            public string name;
-            public DateTime lastPurchase;
-            public int totalAmount;
+        enum Flags {selected = 1, noPermission = 2, maxAmountReached = 4, cooldown = 8 };
 
-            public Tracker() { }
+        public class ProductUI
+        {
+            BasePlayer player;
+            Category category;
+            Product product;
+            Rectangle rectangle;
+            Flags flags = 0;
+            string parent;
+            public int remainingAmount = int.MaxValue;
+            public int cooldown = 0;
+
+            public ProductUI(BasePlayer player, Category category, Product product, Rectangle rectangle, string parent)
+            {
+                this.player = player;
+                this.category = category;
+                this.product = product;
+                this.rectangle = rectangle;
+                this.parent = parent;
+
+                refresh();
+            }
+
+            public void generateBase()
+            {
+                //set flags
+                if (!PluginInstance.hasPermission(player, category, product)) flags |= Flags.noPermission;
+                else
+                {
+                    int remainingCat = int.MaxValue;
+                    int remainingProd = int.MaxValue;
+                    PluginInstance.maxAmountReached(player.userID, category, out remainingCat);
+                    PluginInstance.maxAmountReached(player.userID, product, out remainingProd);
+
+                    if (remainingCat == 0 || remainingProd == 0)
+                    {
+                        flags |= Flags.maxAmountReached;
+                    }
+                    else
+                    {
+                        if (!PluginInstance.cooldownElapsed(player.userID, category) || !PluginInstance.cooldownElapsed(player.userID, product))
+                        {
+                            flags |= Flags.cooldown;
+                        }
+                        else
+                        {
+                            flags &= ~Flags.cooldown;
+                        }
+                    }
+                    remainingAmount = Math.Min(remainingCat, remainingProd);
+
+                }
+
+                GuiContainer container = new GuiContainer(PluginInstance, $"productui_{product.safeName}", parent);
+                //background
+                container.addPanel($"productui_{product.safeName}_bg", rectangle, GuiContainer.Layer.menu, flags.HasFlag(Flags.selected) ? white30 : null, FadeIn, FadeOut);
+                float bgW = (rectangle.anchorMaxX - rectangle.anchorMinX) * 1920;
+                float bgH = (rectangle.anchorMaxY - rectangle.anchorMinY) * 1080;
+
+                //image
+                container.addPanel($"productui_{product.safeName}_imgbg", new Rectangle(0, 0, bgW - 2, bgW, bgW, bgH, true), $"productui_{product.safeName}_bg", white30, FadeIn, FadeOut);
+                Rectangle imgRect = new Rectangle(productMargin, productMargin, bgW - (2 * productMargin), bgW - (2 * productMargin), bgW, bgH, true);
+                if (string.IsNullOrEmpty(product.imageUrl) && !string.IsNullOrEmpty(product.shortname))
+                {
+                    container.addRawImage($"productui_{product.safeName}_img", imgRect, PluginInstance.guiCreator.getItemIcon(product.shortname), $"productui_{product.safeName}_bg", null, FadeIn, FadeOut);
+                }
+                else
+                {
+                    container.addImage($"productui_{product.safeName}_img", imgRect, product.safeName, $"productui_{product.safeName}_bg", null, FadeIn, FadeOut);
+                }
+
+                //remainingAmount
+                if (remainingAmount != int.MaxValue)
+                {
+                    Rectangle remRect = new Rectangle(0, bgH - bgW, bgW, 20, bgW, bgH);
+                    container.addText($"productui_{product.safeName}_left", remRect, new GuiText($"{remainingAmount} left", 10, white90), FadeIn, FadeOut, $"productui_{product.safeName}_bg");
+                }
+
+                //label
+                Rectangle labelRect = new Rectangle(0, 0, bgW-2, bgH - bgW - 5, bgW, bgH);
+                container.addPanel($"productui_{product.safeName}_label", labelRect, $"productui_{product.safeName}_bg", white30, FadeIn, FadeOut, new GuiText(product.name, product.fontsize, black90));
+
+                Action<BasePlayer, string[]> callback = (bPlayer, input) =>
+                {
+                    if (flags.HasFlag(Flags.selected)) return;
+                    else
+                    {
+                        foreach(ProductUI uiProduct in PluginInstance.displayedProducts[player.userID])
+                        {
+                            if (uiProduct.flags.HasFlag(Flags.selected)) uiProduct.deselect();
+                        }
+                        flags |= Flags.selected;
+                    }
+                    this.refresh();
+                    GuiTracker.getGuiTracker(bPlayer).destroyGui(PluginInstance, "info");
+                    PluginInstance.sendInfo(bPlayer, product);
+                    PluginInstance.sendCheckout(bPlayer, category, product);
+                };
+
+                //overlays
+                if (flags.HasFlag(Flags.noPermission) || flags.HasFlag(Flags.maxAmountReached) || flags.HasFlag(Flags.cooldown))
+                {
+                    container.addPlainPanel($"productui_{product.safeName}_forbidden_bgpanel", new Rectangle(), $"productui_{product.safeName}_img", black40, FadeIn, FadeOut, true);
+                    if(flags.HasFlag(Flags.noPermission) || flags.HasFlag(Flags.maxAmountReached))
+                    {
+                        container.addImage($"productui_{product.safeName}_forbidden", new Rectangle(), "no_permission", $"productui_{product.safeName}_img", white90, FadeIn, FadeOut);
+                    }
+                    else
+                    {
+                        container.addImage($"productui_{product.safeName}_cooldown", new Rectangle(), "cooldown", $"productui_{product.safeName}_img", white90, FadeIn, FadeOut);
+
+                        container.timers.Add(PluginInstance.timer.Repeat(config.cooldownInterval, (int)(cooldown/config.cooldownInterval), () =>
+                        {
+                            int cooldownCat = 0;
+                            int cooldownProd = 0;
+                            PluginInstance.cooldownElapsed(player.userID, category, out cooldownCat);
+                            PluginInstance.cooldownElapsed(player.userID, product, out cooldownProd);
+                            cooldown = Math.Max(Math.Max(cooldownCat, cooldownProd), 0);
+#if DEBUG
+                            player.ChatMessage($"cooldown:{cooldown}");
+#endif
+
+                            GuiContainer cooldownUI = new GuiContainer(PluginInstance, $"productui_{product.safeName}_cooldownui", $"productui_{product.safeName}");
+                            cooldownUI.addText($"productui_{product.safeName}_cooldowntext", new Rectangle(), new GuiText(PluginInstance.formatTimeSpan(new TimeSpan(0, 0, cooldown)), 14, white90), FadeIn, FadeOut, $"productui_{product.safeName}_cooldown");
+                            cooldownUI.display(player);
+                            if (cooldown == 0)
+                            {
+                                refresh();
+                                if (flags.HasFlag(Flags.selected)) PluginInstance.sendCheckout(player, category, product);
+                            }
+                        }));
+                    }
+                }
+
+
+                container.addPlainButton($"productui_{product.safeName}_button", new Rectangle(), callback: callback, parent: $"productui_{product.safeName}_bg");
+                container.display(player);
+            }
+
+            public void refresh()
+            {
+#if DEBUG
+                player.ChatMessage($"generating productUI for {product.name}");
+                player.ChatMessage($"cooldown:{cooldown}, remainingAmount:{remainingAmount}");
+#endif
+                generateBase();
+            }
+
+            public void deselect()
+            {
+                this.flags &= ~Flags.selected;
+                refresh();
+            }
         }
 
         #endregion classes
@@ -198,17 +354,18 @@ namespace Oxide.Plugins
         #endregion oxide hooks
 
         #region UI
+        Dictionary<ulong, List<ProductUI>> displayedProducts = new Dictionary<ulong, List<ProductUI>>();
 
         #region global parameters
 
-        private int maxProducts = 18;
-        private int maxIngredients = 4;
+        private const int maxProducts = 18;
+        private const int maxIngredients = 4;
 
-        private float FadeIn = 0.1f;
-        private float FadeOut = 0.1f;
+        private const float FadeIn = 0.1f;
+        private const float FadeOut = 0.1f;
 
-        private int iconMargin = 5;
-        private int productMargin = 10;
+        private const int iconMargin = 5;
+        private const int productMargin = 10;
 
         private static GuiColor black40 = new GuiColor(0, 0, 0, 0.4f);
         private static GuiColor black60 = new GuiColor(0, 0, 0, 0.6f);
@@ -239,6 +396,7 @@ namespace Oxide.Plugins
         private void closeShopUi(BasePlayer player)
         {
             if (player == null) return;
+            displayedProducts.Remove(player.userID);
             GuiTracker.getGuiTracker(player).destroyGui(this, "shop");
         }
 
@@ -322,8 +480,8 @@ namespace Oxide.Plugins
 
         private void sendProducts(BasePlayer player, Category category)
         {
-            GuiContainer container = new GuiContainer(this, "products", "categories");
             List<Product> products = getProducts(player, category);
+            List<ProductUI> uiProducts = new List<ProductUI>();
 
             int startX = 75;
             int startY = 105;
@@ -332,8 +490,6 @@ namespace Oxide.Plugins
             int columns = 6;
             float sizeEachX = (1391 - ((columns + 1) * gap)) / columns;
             float sizeEachY = (940 - ((rows + 1) * gap)) / rows;
-
-            Product activeProduct = null;
 
             int count = 0;
             for (int i = 0; i < rows; i++)
@@ -347,60 +503,15 @@ namespace Oxide.Plugins
                     if (count == products.Count) break;
                     Product product = products[count];
                     float anchorX = startX + (j * (sizeEachX + gap));
-                    container.addPanel($"products_{product.safeName}_imgbg", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, white30, FadeIn, FadeOut);
-                    if (string.IsNullOrEmpty(product.imageUrl) && !string.IsNullOrEmpty(product.shortname))
-                    {
-                        container.addRawImage($"products_{product.safeName}_img", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), (i == 0) ? (startY + productMargin) : (anchorY + productMargin), sizeEachX - (2 * productMargin), sizeEachX - (2 * productMargin), 1920, 1080, true), guiCreator.getItemIcon(product.shortname), GuiContainer.Layer.menu, null, FadeIn, FadeOut);
-                    }
-                    else
-                    {
-                        container.addPanel($"products_{product.safeName}_img", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), (i == 0) ? (startY + productMargin) : (anchorY + productMargin), sizeEachX - (2 * productMargin), sizeEachX - (2 * productMargin), 1920, 1080, true), GuiContainer.Layer.menu, null, FadeIn, FadeOut, null, product.safeName);
-                    }
-                    int remainingProduct;
-                    int remainingCategory;
-                    maxAmountReached(player.userID, product, out remainingProduct);
-                    maxAmountReached(player.userID, category, out remainingCategory);
-                    int remaining = Math.Min(remainingProduct, remainingCategory);
-                    if (remaining != 0)
-                    {
-                        container.addText($"products_{product.safeName}_amount", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), ((i == 0) ? (startY + productMargin) : (anchorY + productMargin)) + sizeEachX - (2 * productMargin) - 25, sizeEachX - (2 * productMargin), 25, 1920, 1080, true), GuiContainer.Layer.menu, new GuiText($"{remaining} left", 14, white90), FadeIn, FadeOut);
-                    }
-                    container.addPanel($"products_{product.safeName}_label", new Rectangle((j == 0) ? startX : anchorX, ((i == 0) ? startY : anchorY) + 5 + sizeEachX, sizeEachX, sizeEachY - (5 + sizeEachX), 1920, 1080, true), GuiContainer.Layer.menu, white30, FadeIn, FadeOut, new GuiText(product.name, product.fontsize, black90));
-                    int index = count;
-                    Action<BasePlayer, string[]> callback = (bPlayer, input) =>
-                    {
-                        if (activeProduct == products[index]) return;
-                        GuiTracker.getGuiTracker(bPlayer).destroyGui(this, "info");
-                        sendInfo(bPlayer, products[index]);
-                        sendCheckout(bPlayer, category, products[index]);
-                        activeProduct = products[index];
-                    };
-                    
-                    if (!hasPermission(player, category, product) || maxAmountReached(player.userID, category) || maxAmountReached(player.userID, product))
-                    {
-                        container.addPlainPanel($"products_{product.safeName}_forbidden_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, true);
-                        container.addImage($"products_{product.safeName}_forbidden", new Rectangle(0, 0, 1, 1), "no_permission", $"products_{product.safeName}_forbidden_bgpanel", white90, FadeIn, FadeOut);
-                    }
-                    else
-                    {
-                        int cooldown = 0;
-                        if (!cooldownElapsed(player.userID, product, out cooldown)) { }
-                        else if (!cooldownElapsed(player.userID, category, out cooldown)) { }
-                        if(cooldown > 0)
-                        {
-                            container.addPlainPanel($"products_{product.safeName}_cooldown_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, true);
-                            container.addImage($"products_{product.safeName}_cooldown", new Rectangle(), "cooldown", $"products_{product.safeName}_cooldown_bgpanel", white90, FadeIn, FadeOut);
-                            container.addText($"products_{product.safeName}_cooldown_text", new Rectangle(), new GuiText(formatTimeSpan(new TimeSpan(0,0,cooldown)), 14, white90), FadeIn, FadeOut, $"products_{product.safeName}_cooldown");
-                        }
-                    }
 
+                    ProductUI uiProduct = new ProductUI(player, category, product, new Rectangle(anchorX, anchorY, sizeEachX, sizeEachY, 1920, 1080, true), "categories");
+                    uiProducts.Add(uiProduct);
 
-                    container.addPlainButton($"products_{product.safeName}_button", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachY, 1920, 1080, true), GuiContainer.Layer.menu, callback: callback);
                     count++;
                 }
             }
-
-            container.display(player);
+            displayedProducts.Remove(player.userID);
+            displayedProducts.Add(player.userID, uiProducts);
         }
 
         private void sendInfo(BasePlayer player, Product product)
@@ -486,7 +597,10 @@ namespace Oxide.Plugins
                     sendCheckout(player, category, product, amount);
                     sendBalance(player);
                 }
-                sendProducts(player, category);
+                foreach(ProductUI uiProduct in displayedProducts[player.userID])
+                {
+                    uiProduct.refresh();
+                }
             };
             container.addPlainButton("buybutton", new Rectangle(1616, 985, 234, 45, 1920, 1080, true), GuiContainer.Layer.menu, canBuy(player, category, product, amount) ? green70 : red70, 0, 0, new GuiText("Buy", 26, white90), buyCallback);
 
@@ -710,9 +824,6 @@ namespace Oxide.Plugins
             Tracker tracker = getTracker(userID, input.name);
             if (tracker == null) return false;
             remainingAmount = input.maxAmount - tracker.totalAmount;
-#if DEBUG
-            BasePlayer.FindByID(userID).ChatMessage($"remainingAmount = {remainingAmount}");
-#endif
             if (remainingAmount <= 0) return true;
             return false;
         }
@@ -729,9 +840,6 @@ namespace Oxide.Plugins
             Tracker tracker = getTracker(userID, input.name);
             if (tracker == null) return true;
             remainingSeconds = (int)(input.cooldownSeconds - DateTime.Now.Subtract(tracker.lastPurchase).TotalSeconds);
-#if DEBUG
-            BasePlayer.FindByID(userID).ChatMessage($"remainingSeconds = {remainingSeconds}");
-#endif
             if (remainingSeconds <= 0) return true;
             return false;
         }
@@ -921,6 +1029,9 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "cooldown Overlay (recommended size: 400px x 400px)")]
             public string cooldownOverlay;
 
+            [JsonProperty(PropertyName = "cooldown Interval (increase to reduce lag)")]
+            public float cooldownInterval;
+
             [JsonProperty(PropertyName = "Economics/ServerRewards Point Icon")] 
             public string currencyIcon;
 
@@ -940,6 +1051,7 @@ namespace Oxide.Plugins
                 defaultInfoBG = "https://i.imgur.com/tQPYSIf.jpg",
                 noPermissionOverlay = "https://i.imgur.com/pKTsSZg.png",
                 cooldownOverlay = "https://i.imgur.com/55uXmZt.png",
+                cooldownInterval = 1,
                 currencyIcon = "https://i.gyazo.com/acbdabe16b83e4312af80bbce31bc36c.png",
                 Categories = new List<Category>
                 {
