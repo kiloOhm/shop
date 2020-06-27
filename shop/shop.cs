@@ -15,7 +15,7 @@ using static Oxide.Plugins.GUICreator;
 
 namespace Oxide.Plugins
 {
-    [Info("shop", "OHM", "1.0.3")]
+    [Info("shop", "OHM", "1.0.4")]
     [Description("The ultimate GUI Shop")]
     internal class shop : RustPlugin
     {
@@ -58,18 +58,18 @@ namespace Oxide.Plugins
             public string name { get; set; }
 
             [JsonProperty(PropertyName = "Fontsize")]
-            public int fontsize;
+            public int fontsize { get; set; }
 
             public string safeName => Regex.Replace(name, @" ", "");
 
             [JsonProperty(PropertyName = "Category icon url/shortname (recommended size: 60px x 60px, item shortname for item icon)")]
-            public string categoryicon;
+            public string categoryicon { get; set; }
 
             [JsonProperty(PropertyName = "Permission to craft (if empty, no permission required)")]
-            public string permission;
+            public string permission { get; set; }
 
             [JsonProperty(PropertyName = "Missing Permission Message")]
-            public string forbiddenMsg;
+            public string forbiddenMsg { get; set; }
 
             [JsonProperty(PropertyName = "Maximum amount items that can be purchased from this category")]
             public int maxAmount { get; set; }
@@ -78,7 +78,7 @@ namespace Oxide.Plugins
             public int cooldownSeconds { get; set; }
 
             [JsonProperty(PropertyName = "Products")]
-            public List<Product> products = new List<Product>();
+            public List<Product> products { get; set; } = new List<Product>();
         }
 
         [JsonObject(MemberSerialization.OptIn)]
@@ -88,21 +88,21 @@ namespace Oxide.Plugins
             public string name { get; set; }
 
             [JsonProperty(PropertyName = "Fontsize")]
-            public int fontsize;
+            public int fontsize { get; set; }
 
             public string safeName => Regex.Replace(name, @" ", "");
 
             [JsonProperty(PropertyName = "Description (max. 200 characters)")]
-            public string description = null;
+            public string description { get; set; } = null;
 
             [JsonProperty(PropertyName = "Image URL (recommended size: 400px x 400px)")]
-            public string imageUrl;
+            public string imageUrl { get; set; }
 
             [JsonProperty(PropertyName = "Permission to craft (if empty, no permission required)")]
-            public string permission;
+            public string permission { get; set; }
 
             [JsonProperty(PropertyName = "Missing Permission Message")]
-            public string forbiddenMsg;
+            public string forbiddenMsg { get; set; }
 
             [JsonProperty(PropertyName = "Maximum amount that can be purchased")]
             public int maxAmount { get; set; }
@@ -111,16 +111,16 @@ namespace Oxide.Plugins
             public int cooldownSeconds { get; set; }
 
             [JsonProperty(PropertyName = "Command to be executed on purchase")]
-            public string command;
+            public string command { get; set; }
 
             [JsonProperty(PropertyName = "Item shortname")]
-            public string shortname;
+            public string shortname { get; set; }
 
             [JsonProperty(PropertyName = "Item amount")]
-            public int amount;
+            public int amount { get; set; }
 
             [JsonProperty(PropertyName = "Ingredients (max. 4)")]
-            public Dictionary<string, int> ingredients;
+            public Dictionary<string, int> ingredients { get; set; } = new Dictionary<string, int>();
         }
 
         public class Tracker
@@ -245,7 +245,7 @@ namespace Oxide.Plugins
         private void sendPanel(BasePlayer player)
         {
             GuiContainer container = new GuiContainer(this, "shop");
-            container.addPlainPanel("panel_bgpanel", new Rectangle(60, 40, 1800, 1000, 1920, 1080, true), GuiContainer.Layer.menu, black60, FadeIn, FadeOut, true);
+            container.addPlainPanel("panel_bgpanel", new Rectangle(60, 40, 1800, 1000, 1920, 1080, true), GuiContainer.Layer.menu, black60, FadeIn, FadeOut, GuiContainer.Blur.medium);
 
             container.addPlainPanel("categories_productpanel", new Rectangle(65, 95, 1391, 940, 1920, 1080, true), GuiContainer.Layer.menu, black60, FadeIn, FadeOut);
             container.addImage("productpanel_background", new Rectangle(75, 105, 1371, 920, 1920, 1080, true), "products_background", GuiContainer.Layer.menu, white30, FadeIn, FadeOut);
@@ -361,7 +361,7 @@ namespace Oxide.Plugins
                     maxAmountReached(player.userID, product, out remainingProduct);
                     maxAmountReached(player.userID, category, out remainingCategory);
                     int remaining = Math.Min(remainingProduct, remainingCategory);
-                    if (remaining != 0)
+                    if (remaining != 0 && remaining != int.MaxValue)
                     {
                         container.addText($"products_{product.safeName}_amount", new Rectangle((j == 0) ? (startX + productMargin) : (anchorX + productMargin), ((i == 0) ? (startY + productMargin) : (anchorY + productMargin)) + sizeEachX - (2 * productMargin) - 25, sizeEachX - (2 * productMargin), 25, 1920, 1080, true), GuiContainer.Layer.menu, new GuiText($"{remaining} left", 14, white90), FadeIn, FadeOut);
                     }
@@ -378,7 +378,7 @@ namespace Oxide.Plugins
                     
                     if (!hasPermission(player, category, product) || maxAmountReached(player.userID, category) || maxAmountReached(player.userID, product))
                     {
-                        container.addPlainPanel($"products_{product.safeName}_forbidden_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, true);
+                        container.addPlainPanel($"products_{product.safeName}_forbidden_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, GuiContainer.Blur.medium);
                         container.addImage($"products_{product.safeName}_forbidden", new Rectangle(0, 0, 1, 1), "no_permission", $"products_{product.safeName}_forbidden_bgpanel", white90, FadeIn, FadeOut);
                     }
                     else
@@ -388,7 +388,7 @@ namespace Oxide.Plugins
                         else if (!cooldownElapsed(player.userID, category, out cooldown)) { }
                         if(cooldown > 0)
                         {
-                            container.addPlainPanel($"products_{product.safeName}_cooldown_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, true);
+                            container.addPlainPanel($"products_{product.safeName}_cooldown_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, GuiContainer.Blur.medium);
                             container.addImage($"products_{product.safeName}_cooldown", new Rectangle(), "cooldown", $"products_{product.safeName}_cooldown_bgpanel", white90, FadeIn, FadeOut);
                             container.addText($"products_{product.safeName}_cooldown_text", new Rectangle(), new GuiText(formatTimeSpan(new TimeSpan(0,0,cooldown)), 14, white90), FadeIn, FadeOut, $"products_{product.safeName}_cooldown");
                         }
@@ -469,7 +469,7 @@ namespace Oxide.Plugins
                 sendCheckout(bPlayer, category, product, amountLocal - 1);
             };
             container.addPlainButton("atc_minusbackground", new Rectangle(1466, 985, 45, 45, 1920, 1080, true), GuiContainer.Layer.menu, black60, 0, 0, new GuiText("-", 10, white90), minusCallback);
-            container.addPanel("atc_amountbackground", new Rectangle(1516, 985, 45, 45, 1920, 1080, true), GuiContainer.Layer.menu, white30, 0, 0, new GuiText((product.amount*amount).ToString(), 10, black90));
+            container.addPanel("atc_amountbackground", new Rectangle(1516, 985, 45, 45, 1920, 1080, true), GuiContainer.Layer.menu, white30, 0, 0, new GuiText(Math.Max((product.amount*amount),1).ToString(), 10, black90));
             Action<BasePlayer, string[]> plusCallback = (bPlayer, input) =>
             {
                 if (product.amount == 0) return;
@@ -538,6 +538,9 @@ namespace Oxide.Plugins
 
         private bool purchase(BasePlayer player, Category category, Product product, int amount)
         {
+#if DEBUG
+            player.ChatMessage($"purchasing {amount} x {product.name}");
+#endif
             //can buy?
             if (!hasPermission(player, category, product))
             {
@@ -570,6 +573,11 @@ namespace Oxide.Plugins
                 guiCreator.customGameTip(player, string.Format(lang.GetMessage("cooldown", this, player.UserIDString), remaining), 2, gametipType.error);
                 return false;
             }
+            if(!enoughInventorySpace(player, product, amount))
+            {
+                guiCreator.customGameTip(player, string.Format(lang.GetMessage("noSpace", this, player.UserIDString)), 2, gametipType.error);
+                return false;
+            }
 
 
             //take price
@@ -580,11 +588,11 @@ namespace Oxide.Plugins
                     ItemDefinition itemDefinition = ItemManager.FindItemDefinition(ingredient.Key);
                     if (itemDefinition != null)
                     {
-                        player.inventory.Take(null, itemDefinition.itemid, ingredient.Value);
+                        player.inventory.Take(null, itemDefinition.itemid, ingredient.Value*amount);
                     }
                     else if (ingredient.Key.ToUpper() == "POINTS" || ingredient.Key.ToUpper() == "RP" || ingredient.Key.ToUpper() == "REWARD POINTS")
                     {
-                        takePoints(player, ingredient.Value);
+                        takePoints(player, ingredient.Value*amount);
                     }
                 }
             }
@@ -677,7 +685,7 @@ namespace Oxide.Plugins
 
         private void log(BasePlayer player, Product product, int amount)
         {
-            LogToFile("shopPurchases", $"{DateTime.Now.ToString("MM/dd/yyyy HH:mm:ss")} {player.displayName } bought {Math.Max(1,product.amount)*amount} x {product.name}" , this);
+            LogToFile("shopPurchases", $"{DateTime.Now.ToString("MM/dd/yyyy HH:mm:ss")} {player.displayName}[{player.userID}] bought {Math.Max(1,product.amount)*amount} x {product.name}" , this);
         }
 
         private Tracker getTracker(ulong userID, string name)
@@ -773,6 +781,45 @@ namespace Oxide.Plugins
             if (maxAmountReached(player.userID, product)) return false;
             if (!cooldownElapsed(player.userID, category)) return false;
             if (!cooldownElapsed(player.userID, product)) return false;
+            if (!enoughInventorySpace(player, product, amount)) return false;
+            return true;
+        }
+
+        private bool enoughInventorySpace(BasePlayer player, Product product, int amount)
+        {
+            int freeSlots = 0;
+            if(!player.inventory.containerMain.IsFull())
+            {
+                for(int i = 0; i < 24; i++)
+                {
+                    if (!player.inventory.containerMain.SlotTaken(i)) freeSlots++;
+                }
+            }
+
+            if (!player.inventory.containerBelt.IsFull())
+            {
+                for (int i = 0; i < 24; i++)
+                {
+                    if (!player.inventory.containerBelt.SlotTaken(i)) freeSlots++;
+                }
+            }
+
+            if (freeSlots == 0) return false;
+
+            int requiredSlots = amount;
+
+            if(!string.IsNullOrEmpty(product.shortname))
+            {
+                ItemDefinition itemDefinition = ItemManager.FindItemDefinition(product.shortname);
+                if(itemDefinition != null)
+                {
+                    requiredSlots = (amount * product.amount) / itemDefinition.stackable;
+                    if (((amount * product.amount) % itemDefinition.stackable) != 0) requiredSlots++;
+                }
+            }
+
+            if (requiredSlots > freeSlots) return false;
+
             return true;
         }
 
@@ -1346,7 +1393,8 @@ namespace Oxide.Plugins
             {"noPermissionToBuy", "You don't have permission to buy this!" },
             {"cantAfford", "You can't afford this!"},
             {"maxAmount", "You can't buy any more of this!" },
-            {"cooldown", "You have to wait {0} before you can buy more!" }
+            {"cooldown", "You have to wait {0} before you can buy more!" },
+            {"noSpace", "You don't have enough inventory space!" }
         };
 
         #endregion Localization
