@@ -792,7 +792,7 @@ namespace Oxide.Plugins
             {
                 for(int i = 0; i < 24; i++)
                 {
-                    if (!player.inventory.containerMain.SlotTaken(i)) freeSlots++;
+                    if (player.inventory.containerMain.GetSlot(i) == null) freeSlots++;
                 }
             }
 
@@ -800,7 +800,7 @@ namespace Oxide.Plugins
             {
                 for (int i = 0; i < 24; i++)
                 {
-                    if (!player.inventory.containerBelt.SlotTaken(i)) freeSlots++;
+                    if (player.inventory.containerBelt.GetSlot(i) == null) freeSlots++;
                 }
             }
 
