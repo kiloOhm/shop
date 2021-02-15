@@ -1,13 +1,16 @@
 ﻿// Requires: GUICreator
 
-//#define DEBUG
+#define DEBUG
 using ConVar;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
 using Oxide.Core;
 using Oxide.Core.Configuration;
 using Oxide.Core.Plugins;
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
@@ -15,7 +18,7 @@ using static Oxide.Plugins.GUICreator;
 
 namespace Oxide.Plugins
 {
-    [Info("shop", "OHM", "1.0.4")]
+    [Info("shop", "OHM", "1.0.5")]
     [Description("The ultimate GUI Shop")]
     internal class shop : RustPlugin
     {
@@ -54,6 +57,8 @@ namespace Oxide.Plugins
         [JsonObject(MemberSerialization.OptIn)]
         public class Category:ITrackable
         {
+            public enum UI { command, mixingTable}
+
             [JsonProperty(PropertyName = "Name")]
             public string name { get; set; }
 
@@ -77,6 +82,10 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Cooldown in seconds after buying an item from this category")]
             public int cooldownSeconds { get; set; }
 
+            [JsonProperty(PropertyName = "UI which this category is displayed on (command / mixingTable)")]
+            [JsonConverter(typeof(StringEnumConverter))]
+            public UI Ui { get; set; } = UI.command;
+
             [JsonProperty(PropertyName = "Products")]
             public List<Product> products { get; set; } = new List<Product>();
         }
@@ -90,7 +99,7 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Fontsize")]
             public int fontsize { get; set; }
 
-            public string safeName => Regex.Replace(name, @" ", "");
+            public string safeName => $"{Regex.Replace(name, @" ", "")}_{imageUrl}";
 
             [JsonProperty(PropertyName = "Description (max. 200 characters)")]
             public string description { get; set; } = null;
@@ -152,10 +161,17 @@ namespace Oxide.Plugins
 
         private void OnServerInitialized()
         {
+#if DEBUG
+            Puts("initializing Commands");
+#endif
             //commands
             cmd.AddChatCommand(config.command, this, nameof(shopCommand));
             cmd.AddChatCommand("wipeshop", this, nameof(wipeShopCommand));
             cmd.AddConsoleCommand("shop.close", this, nameof(closeShop));
+            cmd.AddConsoleCommand("shop.defaultconfig", this, nameof(defaultConfigCommand));
+#if DEBUG
+            Puts("initialized Commands");
+#endif
 
             //references
             guiCreator = (GUICreator)Manager.GetPlugin("GUICreator");
@@ -166,33 +182,32 @@ namespace Oxide.Plugins
                 Puts("GUICreator missing! This shouldn't happen");
                 return;
             }
-            guiCreator.registerImage(this, "white_cross", "https://i.imgur.com/fbwkYDj.png");
-            guiCreator.registerImage(this, "dollar_icon", config.currencyIcon);
-            guiCreator.registerImage(this, "no_permission", config.noPermissionOverlay);
-            guiCreator.registerImage(this, "cooldown", config.cooldownOverlay);
-            guiCreator.registerImage(this, "info_background", config.defaultInfoBG);
-            guiCreator.registerImage(this, "products_background", config.background);
+#if DEBUG
+            Puts("initialized References");
+#endif
+
+            guiCreator.registerImage(this, "white_cross", "https://i.imgur.com/fbwkYDj.png", imgSizeX: 45, imgSizeY: 45);
+            guiCreator.registerImage(this, "dollar_icon", config.currencyIcon, imgSizeX: 35, imgSizeY: 35);
+            guiCreator.registerImage(this, "no_permission", config.noPermissionOverlay, imgSizeX: 220, imgSizeY: 300);
+            guiCreator.registerImage(this, "cooldown", config.cooldownOverlay, imgSizeX: 220, imgSizeY: 300);
+            guiCreator.registerImage(this, "info_background", config.defaultInfoBG, imgSizeX: 384, imgSizeY: 384);
+            guiCreator.registerImage(this, "products_background", config.background, imgSizeX: 1371, imgSizeY: 920);
+#if DEBUG
+            Puts("initialized images");
+#endif
 
             //process category/product data
-            foreach (Category category in config.Categories)
-            {
-                if (!string.IsNullOrEmpty(category.permission)) permission.RegisterPermission(category.permission, this);
-                if (!string.IsNullOrEmpty(category.categoryicon))
-                {
-                    ItemDefinition itemDefinition = ItemManager.FindItemDefinition(category.categoryicon);
-                    if (itemDefinition == null) guiCreator.registerImage(this, category.safeName, category.categoryicon);
-                }
-                foreach (Product product in category.products)
-                {
-                    if (!string.IsNullOrEmpty(product.permission)) permission.RegisterPermission(product.permission, this);
-                    if (!string.IsNullOrEmpty(product.imageUrl)) guiCreator.registerImage(this, product.safeName, product.imageUrl);
-                    if (string.IsNullOrEmpty(product.description) && !string.IsNullOrEmpty(product.shortname))
-                    {
-                        ItemDefinition itemDefinition = ItemManager.FindItemDefinition(product.shortname);
-                        if (itemDefinition != null) product.description = itemDefinition.displayDescription.english;
-                    }
-                }
-            }
+            ServerMgr.Instance.StartCoroutine(ProcessSellOrders());
+        }
+
+        private void CanLootEntity(BasePlayer player, MixingTable mixingTable)
+        {
+            SendMixingTableUI(player);
+        }
+
+        void OnLootEntityEnd(BasePlayer player, MixingTable mixingTable)
+        {
+            CloseMixingTableUI(player);
         }
 
         #endregion oxide hooks
@@ -225,6 +240,8 @@ namespace Oxide.Plugins
         private static GuiColor halfRed90 = new GuiColor(0.5f, 0, 0, 0.9f);
 
         #endregion global parameters
+
+        #region command
 
         //divide and conquer...
         private void sendShopUi(BasePlayer player)
@@ -283,6 +300,8 @@ namespace Oxide.Plugins
 
         private void sendCategories(BasePlayer player, List<Category> categories, Category category)
         {
+            categories = categories.Where(c => c.Ui == Category.UI.command).ToList();
+
             GuiContainer container = new GuiContainer(this, "categories", "shop");
 
             int start = 65;
@@ -330,8 +349,8 @@ namespace Oxide.Plugins
             int gap = 10;
             int rows = 3;
             int columns = 6;
-            float sizeEachX = (1391 - ((columns + 1) * gap)) / columns;
-            float sizeEachY = (940 - ((rows + 1) * gap)) / rows;
+            float sizeEachX = (1391 - ((columns + 1) * gap)) / columns; //220,16 //200
+            float sizeEachY = (940 - ((rows + 1) * gap)) / rows; //300 //280
 
             Product activeProduct = null;
 
@@ -378,8 +397,9 @@ namespace Oxide.Plugins
                     
                     if (!hasPermission(player, category, product) || maxAmountReached(player.userID, category) || maxAmountReached(player.userID, product))
                     {
-                        container.addPlainPanel($"products_{product.safeName}_forbidden_bgpanel", new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true), GuiContainer.Layer.menu, black40, FadeIn, FadeOut, GuiContainer.Blur.medium);
-                        container.addImage($"products_{product.safeName}_forbidden", new Rectangle(0, 0, 1, 1), "no_permission", $"products_{product.safeName}_forbidden_bgpanel", white90, FadeIn, FadeOut);
+                        Rectangle pos = new Rectangle((j == 0) ? startX : anchorX, (i == 0) ? startY : anchorY, sizeEachX, sizeEachX, 1920, 1080, true);
+                        container.addPlainPanel($"products_{product.safeName}_forbidden_bgpanel", pos, GuiContainer.Layer.menu, black40, FadeIn, FadeOut, GuiContainer.Blur.medium);
+                        container.addImage($"products_{product.safeName}_forbidden", pos, "no_permission", GuiContainer.Layer.menu, white90, FadeIn, FadeOut);
                     }
                     else
                     {
@@ -492,6 +512,22 @@ namespace Oxide.Plugins
 
             container.display(player);
         }
+
+        #endregion
+
+        #region mixingTable
+
+        private void SendMixingTableUI(BasePlayer player)
+        {
+            player.ChatMessage("Sending shop UI");
+        }
+
+        private void CloseMixingTableUI(BasePlayer player)
+        {
+            player.ChatMessage("Closing shop UI");
+        }
+
+        #endregion
 
         #endregion UI
 
@@ -940,6 +976,36 @@ namespace Oxide.Plugins
 
         #region Config
 
+        private IEnumerator ProcessSellOrders()
+        {
+            foreach (Category category in config.Categories)
+            {
+                if (!string.IsNullOrEmpty(category.permission)) permission.RegisterPermission(category.permission, this);
+                if (!string.IsNullOrEmpty(category.categoryicon))
+                {
+                    ItemDefinition itemDefinition = ItemManager.FindItemDefinition(category.categoryicon);
+                    if (itemDefinition == null) guiCreator.registerImage(this, category.safeName, category.categoryicon, imgSizeX: 35, imgSizeY: 35);
+                }
+                foreach (Product product in category.products)
+                {
+                    if (!string.IsNullOrEmpty(product.permission)) permission.RegisterPermission(product.permission, this);
+                    if (!string.IsNullOrEmpty(product.imageUrl)) guiCreator.registerImage(this, product.safeName, product.imageUrl, imgSizeX: 384, imgSizeY: 384);
+                    if (string.IsNullOrEmpty(product.description) && !string.IsNullOrEmpty(product.shortname))
+                    {
+                        ItemDefinition itemDefinition = ItemManager.FindItemDefinition(product.shortname);
+                        if (itemDefinition != null) product.description = itemDefinition.displayDescription.english;
+                    }
+                    yield return null;
+                }
+#if DEBUG
+                Puts($"initialized Category: {category.name}");
+#endif
+            }
+#if DEBUG
+            Puts("initialized products");
+#endif
+        }
+
         private static ConfigData config;
 
         private class ConfigData
@@ -1372,10 +1438,16 @@ namespace Oxide.Plugins
             }
             catch
             {
-                Puts("Config data is corrupted, replacing with default");
-                config = getDefaultConfig();
+                Puts("Config data is corrupted, enter shop.defaultconfig to generate the default config file.");
+                //config = getDefaultConfig();
             }
 
+            SaveConfig();
+        }
+
+        private void defaultConfigCommand(ConsoleSystem.Arg arg)
+        {
+            config = getDefaultConfig();
             SaveConfig();
         }
 
