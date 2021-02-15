@@ -18,7 +18,7 @@ using static Oxide.Plugins.GUICreator;
 
 namespace Oxide.Plugins
 {
-    [Info("shop", "OHM", "1.0.5")]
+    [Info("shop", "OHM", "1.1.0")]
     [Description("The ultimate GUI Shop")]
     internal class shop : RustPlugin
     {
